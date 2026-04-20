@@ -13,13 +13,14 @@ export class OrderService {
   async createReservation(
     userId: string,
     productId: number,
-    currency: Currency
+    currency: Currency,
+    region: 'TR' | 'EU'
   ): Promise<Order | null> {
     return withTransaction(async (conn) => {
       // 1. Aktif sipariş kontrolü
       const [activeRows] = await conn.execute(
         `SELECT id FROM orders
-         WHERE user_id = ? AND status IN ('RESERVED','PENDING_VERIFICATION','PAYMENT_FAILED')
+         WHERE user_id = ? AND status IN ('RESERVED','PENDING_VERIFICATION','PENDING_REVIEW','PAYMENT_FAILED')
          LIMIT 1
          FOR UPDATE`,
         [userId]
@@ -78,14 +79,14 @@ export class OrderService {
       );
       const orderId = String((insertResult as any).insertId);
 
-      // 6. Stok rezervasyonu
-      const stockItem = await stockService.reserveItem(productId, orderId, conn);
+      // 6. Stok rezervasyonu — region ile
+      const stockItem = await stockService.reserveItem(productId, orderId, conn, region);
       if (!stockItem) throw new Error('OUT_OF_STOCK');
 
-      // 7. RESERVED durumuna geç
+      // 7. RESERVED durumuna geç — region'ı da kaydet
       await conn.execute(
-        `UPDATE orders SET status = 'RESERVED', stock_item_id = ? WHERE id = ?`,
-        [stockItem.id, orderId]
+        `UPDATE orders SET status = 'RESERVED', stock_item_id = ?, region = ? WHERE id = ?`,
+        [stockItem.id, region, orderId]
       );
 
       // 8. Audit log
@@ -98,6 +99,7 @@ export class OrderService {
           JSON.stringify({
             productId,
             currency,
+            region,
             stockItemId: stockItem.id,
             walletId: wallet.id,
             cryptoAmount: rateSnapshot.humanReadableAmount,
@@ -107,7 +109,7 @@ export class OrderService {
       );
 
       logger.info('Order reserved', {
-        orderId, userId, productId, currency,
+        orderId, userId, productId, currency, region,
         cryptoAmount: rateSnapshot.humanReadableAmount,
         walletAddress: wallet.address,
       });
@@ -134,7 +136,7 @@ export class OrderService {
       const order = (rows as any[])[0];
       if (!order) throw new Error('ORDER_NOT_FOUND');
       if (String(order.user_id) !== String(userId)) throw new Error('ORDER_NOT_OWNED');
-      assertValidTransition(orderId, order.status as OrderStatus, OrderStatus.PENDING_VERIFICATION);
+      assertValidTransition(orderId, order.status as OrderStatus, OrderStatus.PENDING_REVIEW);
 
       if (new Date(order.expires_at) < new Date()) {
         await conn.execute(`UPDATE orders SET status = 'EXPIRED' WHERE id = ?`, [orderId]);
@@ -148,7 +150,7 @@ export class OrderService {
 
       await conn.execute(`INSERT INTO txid_log (txid, order_id, currency, submitted_by) VALUES (?, ?, ?, ?)`, [normalizedTxid, orderId, order.currency, userId]);
       await conn.execute(
-        `UPDATE orders SET status = 'PENDING_VERIFICATION', txid = ?, txid_submitted_at = NOW() WHERE id = ?`,
+        `UPDATE orders SET status = 'PENDING_REVIEW', txid = ?, txid_submitted_at = NOW() WHERE id = ?`,
         [normalizedTxid, orderId]
       );
       await conn.execute(
@@ -157,12 +159,6 @@ export class OrderService {
       );
 
       logger.info('TXID submitted', { orderId, userId, txid: normalizedTxid });
-
-      await jobService.enqueue(JobType.VERIFY_PAYMENT, {
-        orderId, txid: normalizedTxid, currency: order.currency,
-        requiredAmount: order.crypto_amount_snapshot ?? order.required_amount,
-        depositAddress: order.deposit_address,
-      }, new Date(), 8, `verify:${orderId}:${normalizedTxid}`);
 
       return this.getById(orderId, conn);
     });
@@ -178,7 +174,7 @@ export class OrderService {
 
   async getUserActiveOrder(userId: string): Promise<Order | null> {
     const [rows] = await pool.execute(
-      `SELECT * FROM orders WHERE user_id = ? AND status IN ('RESERVED','PENDING_VERIFICATION','PAYMENT_FAILED') LIMIT 1`,
+      `SELECT * FROM orders WHERE user_id = ? AND status IN ('RESERVED','PENDING_REVIEW','PENDING_VERIFICATION','PAYMENT_FAILED') LIMIT 1`,
       [userId]
     );
     const row = (rows as any[])[0];
@@ -192,11 +188,11 @@ export class OrderService {
       if (!order) throw new Error('ORDER_NOT_FOUND');
       if (String(order.user_id) !== String(userId)) throw new Error('ORDER_NOT_OWNED');
       if (!['RESERVED', 'PAYMENT_FAILED'].includes(order.status)) throw new Error('CANNOT_CANCEL');
-      await conn.execute(`UPDATE orders SET status = 'ADMIN_CANCELLED' WHERE id = ?`, [orderId]);
+      await conn.execute(`UPDATE orders SET status = 'USER_CANCELLED' WHERE id = ?`, [orderId]);
       await stockService.releaseReservation(orderId, conn);
       await conn.execute(
         `INSERT INTO audit_log (actor_id, action, entity_type, entity_id, new_value) VALUES (?, 'USER_CANCELLED_ORDER', 'order', ?, ?)`,
-        [userId, orderId, JSON.stringify({ status: 'ADMIN_CANCELLED' })]
+        [userId, orderId, JSON.stringify({ status: 'USER_CANCELLED' })]
       );
     });
   }
@@ -206,6 +202,7 @@ export class OrderService {
       id: String(row.id), userId: String(row.user_id), productId: row.product_id,
       stockItemId: row.stock_item_id ? String(row.stock_item_id) : null,
       status: row.status as OrderStatus, currency: row.currency as Currency,
+      region: row.region ?? null,
       requiredAmount: String(row.required_amount),
       cryptoAmountSnapshot: row.crypto_amount_snapshot ?? null,
       usdRateSnapshot: row.usd_rate_snapshot ?? null,

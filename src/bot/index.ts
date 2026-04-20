@@ -6,6 +6,7 @@ import {
   userRegistrationMiddleware,
   bannedUserMiddleware,
   rateLimitMiddleware,
+  emergencyStopMiddleware,
 } from './middleware';
 
 import {
@@ -29,12 +30,30 @@ import {
   handleAdminEmergencyStop,
 } from './handlers/admin';
 
+import {
+  handleAdminAddStockStart,
+  handleAdminUsersList,
+  handleAdminProductsPanel,
+  handleAdminRegionLabels,
+  handleAdminSetBanner,
+  handleBanUser,
+  handleUnbanUser,
+  handleToggleProduct,
+  handleWizardCallback,
+  handleWizardCancel,
+  handleWizardText,
+  handleWizardPhoto,
+  isAdminUser,
+  hasActiveWizardSession,
+} from './handlers/admin_wizard';
+
 export const bot = new Telegraf(config.bot.token);
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 bot.use(userRegistrationMiddleware());
 bot.use(rateLimitMiddleware());
 bot.use(bannedUserMiddleware());
+bot.use(emergencyStopMiddleware());
 
 // ── User commands ──────────────────────────────────────────────────────────────
 bot.command('start',       (ctx) => handleStart(ctx));
@@ -64,17 +83,45 @@ bot.action('admin_toggle_emergency',    async (ctx) => {
   await handleAdminDashboard(ctx);
 });
 bot.action('admin_pending_list',        (ctx) => handleAdminPendingReviews(ctx));
-bot.action('admin_products_list',       (ctx) => handleAdminListProducts(ctx));
-bot.action('admin_add_stock_info',      (ctx) => ctx.reply('📥 Stok eklemek için `/addstock <ID> <Bölge> <Açıklama>` komutunu kullanın.\n\nFotoğraflı stok eklemek için lütfen bizzat dosyaları hazırlayın veya admin panelinden geliştirme isteyin.'));
-bot.action('admin_users_list',          (ctx) => ctx.reply('👥 Kullanıcı yönetimi için `/ban <ID>` veya `/unban <ID>` komutlarını kullanabilirsiniz.'));
+bot.action('admin_products_list',       (ctx) => handleAdminProductsPanel(ctx));
 bot.action('admin_back_to_user',        (ctx) => ctx.editMessageText('👋 Kullanıcı moduna dönüldü. /start yazarak menüyü görebilirsiniz.'));
+
+// ── Inline-keyboard callbacks — admin wizard ──────────────────────────────────
+bot.action('admin_add_stock',           (ctx) => handleAdminAddStockStart(ctx));
+bot.action('admin_users_list',          (ctx) => handleAdminUsersList(ctx));
+bot.action('admin_region_labels',       (ctx) => handleAdminRegionLabels(ctx));
+bot.action('admin_set_banner',          (ctx) => handleAdminSetBanner(ctx));
+bot.action('admin_add_product',         (ctx) => handleWizardCallback(ctx));
+bot.action('wizard_cancel',             (ctx) => handleWizardCancel(ctx));
+bot.action(/^stock_product:(\d+)$/,     (ctx) => handleWizardCallback(ctx));
+bot.action(/^stock_region:(.+)$/,       (ctx) => handleWizardCallback(ctx));
+bot.action('stock_confirm',             (ctx) => handleWizardCallback(ctx));
+bot.action(/^ban_user:(.+)$/,           (ctx) => handleBanUser(ctx));
+bot.action(/^unban_user:(.+)$/,         (ctx) => handleUnbanUser(ctx));
+bot.action(/^product_cover:(\d+)$/,     (ctx) => handleWizardCallback(ctx));
+bot.action(/^edit_label_(TR|EU)$/,      (ctx) => handleWizardCallback(ctx));
+bot.action(/^toggle_product:(\d+)$/,    (ctx) => handleToggleProduct(ctx));
 
 // ── Inline-keyboard callbacks — admin manual payment review ───────────────────
 bot.action(/^admin_approve:(.+)$/,      (ctx) => handleAdminApprovePayment(ctx));
 bot.action(/^admin_reject:(.+)$/,       (ctx) => handleAdminRejectPayment(ctx));
 
 // ── Global Text Handler ───────────────────────────────────────────────────────
-bot.on('text', (ctx) => handleTextMessage(ctx));
+bot.on('text', async (ctx) => {
+  const userId = String(ctx.from?.id);
+  if (isAdminUser(userId) && hasActiveWizardSession(userId)) {
+    return handleWizardText(ctx);
+  }
+  return handleTextMessage(ctx);
+});
+
+// ── Global Photo Handler ──────────────────────────────────────────────────────
+bot.on('photo', async (ctx) => {
+  const userId = String(ctx.from?.id);
+  if (isAdminUser(userId) && hasActiveWizardSession(userId)) {
+    return handleWizardPhoto(ctx);
+  }
+});
 
 // ── Global error handler ───────────────────────────────────────────────────────
 bot.catch((err: unknown) => {
@@ -89,3 +136,4 @@ export async function launchBot(): Promise<void> {
   await bot.launch();
   logger.info('Telegram bot launched (Polling mode)');
 }
+

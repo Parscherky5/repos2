@@ -2,12 +2,14 @@ export enum OrderStatus {
   INITIATED = 'INITIATED',
   RESERVED = 'RESERVED',
   PENDING_VERIFICATION = 'PENDING_VERIFICATION',
+  PENDING_REVIEW = 'PENDING_REVIEW',
   PAYMENT_CONFIRMED = 'PAYMENT_CONFIRMED',
   PAYMENT_FAILED = 'PAYMENT_FAILED',
   COMPLETED = 'COMPLETED',
   EXPIRED = 'EXPIRED',
   ADMIN_CANCELLED = 'ADMIN_CANCELLED',
   SYSTEM_CANCELLED = 'SYSTEM_CANCELLED',
+  USER_CANCELLED = 'USER_CANCELLED',
 }
 
 export enum Currency {
@@ -73,6 +75,7 @@ export interface Order {
   stockItemId: string | null;
   status: OrderStatus;
   currency: Currency;
+  region: string | null;
   requiredAmount: string;
   cryptoAmountSnapshot: string | null;
   usdRateSnapshot: string | null;
@@ -105,14 +108,16 @@ export interface BackgroundJob {
 
 export const VALID_TRANSITIONS: Partial<Record<OrderStatus, OrderStatus[]>> = {
   [OrderStatus.INITIATED]: [OrderStatus.RESERVED, OrderStatus.SYSTEM_CANCELLED],
-  [OrderStatus.RESERVED]: [OrderStatus.PENDING_VERIFICATION, OrderStatus.EXPIRED, OrderStatus.ADMIN_CANCELLED],
+  [OrderStatus.RESERVED]: [OrderStatus.PENDING_VERIFICATION, OrderStatus.PENDING_REVIEW, OrderStatus.EXPIRED, OrderStatus.ADMIN_CANCELLED, OrderStatus.USER_CANCELLED],
   [OrderStatus.PENDING_VERIFICATION]: [OrderStatus.PAYMENT_CONFIRMED, OrderStatus.PAYMENT_FAILED],
-  [OrderStatus.PAYMENT_FAILED]: [OrderStatus.PENDING_VERIFICATION, OrderStatus.EXPIRED],
+  [OrderStatus.PENDING_REVIEW]: [OrderStatus.COMPLETED, OrderStatus.PAYMENT_FAILED],
+  [OrderStatus.PAYMENT_FAILED]: [OrderStatus.PENDING_VERIFICATION, OrderStatus.PENDING_REVIEW, OrderStatus.EXPIRED, OrderStatus.USER_CANCELLED],
   [OrderStatus.PAYMENT_CONFIRMED]: [OrderStatus.COMPLETED],
   [OrderStatus.COMPLETED]: [],
   [OrderStatus.EXPIRED]: [],
   [OrderStatus.ADMIN_CANCELLED]: [],
   [OrderStatus.SYSTEM_CANCELLED]: [],
+  [OrderStatus.USER_CANCELLED]: [],
 };
 
 export interface VerifyPaymentPayload {

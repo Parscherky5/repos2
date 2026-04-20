@@ -1,7 +1,9 @@
 import { Context, Markup } from 'telegraf';
 import { orderService } from '../../services/OrderService';
 import { userService } from '../../services/UserService';
-import { Currency, OrderStatus } from '../../types';
+import { settingsService } from '../../services/SettingsService';
+import { escapeMarkdown } from '../../utils/escapeMarkdown';
+import { Currency } from '../../types';
 import pool from '../../db';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
@@ -27,13 +29,16 @@ export async function handleStart(ctx: Context): Promise<void> {
     ['🎧 Destek']
   ];
   if (isAdmin) keyboard.push(['🔐 Admin']);
+  const replyMarkup = Markup.keyboard(keyboard).resize();
 
-  await ctx.reply(
-    `👋 Kripto Pazaryeri'ne Hoş Geldiniz!\n\n` +
-    `💰 Bakiyeniz: $${balanceUsd}\n\n` +
-    `Başlamak için aşağıdaki butonları kullanın.`,
-    Markup.keyboard(keyboard).resize()
-  );
+  const welcomeText = `👋 Kripto Pazaryeri'ne Hoş Geldiniz!\n\n💰 Bakiyeniz: $${balanceUsd}\n\nBaşlamak için aşağıdaki butonları kullanın.`;
+
+  const bannerFileId = await settingsService.get('menu_image_file_id');
+  if (bannerFileId) {
+    await ctx.replyWithPhoto(bannerFileId, { caption: welcomeText, ...replyMarkup });
+  } else {
+    await ctx.reply(welcomeText, replyMarkup);
+  }
 }
 
 // ─── /products ────────────────────────────────────────────────────────────────
@@ -68,14 +73,19 @@ export async function handleProductSelect(ctx: Context): Promise<void> {
   const trCount = Number((stockTR as any[])[0].cnt);
   const euCount = Number((stockEU as any[])[0].cnt);
 
+  const [labelTR, labelEU] = await Promise.all([
+    settingsService.getRegionLabel('TR'),
+    settingsService.getRegionLabel('EU'),
+  ]);
+
   const text = `*${product.name}*\n${product.description || ''}\n\n` +
                `💵 Fiyat: $${(Number(product.price_usd_cents) / 100).toFixed(2)}\n` +
-               `🇹🇷 TR Stok: ${trCount}\n🇪🇺 EU Stok: ${euCount}\n\n` +
+               `${labelTR} Stok: ${trCount}\n${labelEU} Stok: ${euCount}\n\n` +
                `Lütfen bölge seçiniz:`;
 
   const buttons = [
-    [Markup.button.callback(`🇹🇷 TR Satın Al (${trCount})`, `region:${productId}:TR`)],
-    [Markup.button.callback(`🇪🇺 EU Satın Al (${euCount})`, `region:${productId}:EU`)],
+    ...(trCount > 0 ? [[Markup.button.callback(`${labelTR} Satın Al (${trCount})`, `region:${productId}:TR`)]] : []),
+    ...(euCount > 0 ? [[Markup.button.callback(`${labelEU} Satın Al (${euCount})`, `region:${productId}:EU`)]] : []),
     [Markup.button.callback('⬅️ Geri', 'back_to_products')]
   ];
 
@@ -116,12 +126,8 @@ export async function handleOrderInit(ctx: Context): Promise<void> {
   await ctx.answerCbQuery('⏳ Rezervasyon oluşturuluyor...');
 
   try {
-    // Custom order creation to include region
-    const order = await orderService.createReservation(userId, productId, currency);
+    const order = await orderService.createReservation(userId, productId, currency, region);
     if (!order) throw new Error('FAILED');
-    
-    // Update order with region
-    await pool.execute('UPDATE orders SET region = ? WHERE id = ?', [region, order.id]);
 
     const amount = order.cryptoAmountSnapshot ?? order.requiredAmount;
     await safeEdit(ctx, 
@@ -148,37 +154,56 @@ export async function handleOrderInit(ctx: Context): Promise<void> {
 // ─── Text Handler: Handle TXID / Support ───────────────────────────────────────
 export async function handleTextMessage(ctx: Context): Promise<void> {
   if (!ctx.message || !('text' in ctx.message)) return;
-  const text = ctx.message.text;
+  const text = ctx.message.text.trim();
   const userId = String(ctx.from!.id);
 
-  // Check for active order to submit TXID
-  const order = await orderService.getUserActiveOrder(userId);
-  if (order && order.status === 'INITIATED' && text.length > 20) {
-    try {
-      await pool.execute(
-        `UPDATE orders SET txid = ?, status = 'PENDING_REVIEW', txid_submitted_at = NOW() WHERE id = ?`,
-        [text, order.id]
-      );
-      await ctx.reply('✅ TXID alındı! Admin onayı bekleniyor. Onaylandığında ürününüz teslim edilecektir.');
-      
-      // Notify Admin
-      for (const adminId of config.bot.adminIds) {
-        await ctx.telegram.sendMessage(adminId, `🔔 *Yeni Ödeme Bildirimi!*\nSipariş: #${order.id}\nKullanıcı: ${ctx.from!.first_name} (@${ctx.from!.username || 'yok'})\nTXID: \`${text}\``, { parse_mode: 'Markdown' });
-      }
-      return;
-    } catch (e) {
-      await ctx.reply('❌ TXID kaydedilirken bir hata oluştu.');
-      return;
-    }
-  }
-
-  // Handle Support (if no active order context or user just wants to chat)
+  // Keyboard butonlarını / komutları geçir
   if (text.startsWith('/') || ['🛒 Ürünler', '👤 Profilim', '🎧 Destek', '🔐 Admin'].includes(text)) return;
 
-  // If user clicked Support button recently or just sends a message
+  // Aktif sipariş var mı?
+  const order = await orderService.getUserActiveOrder(userId);
+
+  // TXID yakalama: status RESERVED olmalı, henüz TXID gönderilmemiş olmalı
+  if (order && order.status === 'RESERVED' && !order.txid && text.length >= 10) {
+    // TXID format doğrulama: sadece hex/alfanümerik, 10-128 karakter
+    if (!/^[a-fA-F0-9]{10,128}$/.test(text)) {
+      await ctx.reply('⚠️ Geçersiz TXID formatı. Lütfen işlem hash\'inizi doğru girin (sadece harfler ve rakamlar, 10-128 karakter).');
+      return;
+    }
+
+    try {
+      await orderService.submitTxid(order.id, userId, text);
+      await ctx.reply('✅ TXID alındı! Admin onayı bekleniyor. Onaylandığında ürününüz teslim edilecektir.');
+
+      // Admin'e bildir
+      for (const adminId of config.bot.adminIds as string[]) {
+        await ctx.telegram.sendMessage(
+          adminId,
+          `🔔 *Yeni Ödeme Bildirimi!*\nSipariş: #${order.id}\nKullanıcı: ${escapeMarkdown(ctx.from!.first_name)} (@${escapeMarkdown(ctx.from!.username || 'yok')})\nTXID: \`${text}\``,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    } catch (err: any) {
+      const msg = err.message;
+      if (msg === 'TXID_ALREADY_USED') {
+        await ctx.reply('❌ Bu TXID daha önce kullanılmış.');
+      } else if (msg === 'ORDER_EXPIRED') {
+        await ctx.reply('⏰ Siparişiniz süresi dolmuş. Lütfen yeni bir sipariş oluşturun.');
+      } else {
+        await ctx.reply('❌ TXID kaydedilirken bir hata oluştu. Lütfen tekrar deneyin.');
+      }
+    }
+    return;
+  }
+
+  // Destek mesajı
   await ctx.reply('🎧 Destek talebiniz admin panelimize iletildi.');
-  for (const adminId of config.bot.adminIds) {
-    await ctx.telegram.sendMessage(adminId, `🎧 *Yeni Destek Mesajı*\nKimden: ${ctx.from!.first_name} (@${ctx.from!.username || 'yok'})\nID: \`${userId}\`\n\nMesaj: ${text}`, { parse_mode: 'Markdown' });
+  for (const adminId of config.bot.adminIds as string[]) {
+    await ctx.telegram.sendMessage(
+      adminId,
+      `🎧 *Yeni Destek Mesajı*\nKimden: ${escapeMarkdown(ctx.from!.first_name)} (@${escapeMarkdown(ctx.from!.username || 'yok')})\nID: \`${userId}\`\n\nMesaj: ${escapeMarkdown(text)}`,
+      { parse_mode: 'Markdown' }
+    );
   }
 }
 
@@ -218,3 +243,4 @@ export async function handleCancelOrder(ctx: Context): Promise<void> {
   }
   if (ctx.callbackQuery) await ctx.answerCbQuery();
 }
+

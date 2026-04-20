@@ -12,15 +12,16 @@ export class StockService {
   async reserveItem(
     productId: number,
     orderId: string,
-    conn: PoolConnection
+    conn: PoolConnection,
+    region: 'TR' | 'EU'
   ): Promise<StockItem | null> {
     const [rows] = await conn.execute(
       `SELECT * FROM stock_items
-       WHERE product_id = ? AND status = 'AVAILABLE'
+       WHERE product_id = ? AND region = ? AND status = 'AVAILABLE'
        ORDER BY id ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
-      [productId]
+      [productId, region]
     );
     const row = (rows as any[])[0];
     if (!row) return null;
@@ -91,15 +92,16 @@ export class StockService {
   }
 
   /** Bulk-insert new stock items for a product. */
-  async addItems(productId: number, contents: string[]): Promise<number> {
+  async addItems(productId: number, contents: string[], region: 'TR' | 'EU', images?: string[]): Promise<number> {
     if (contents.length === 0) return 0;
-    const placeholders = contents.map(() => '(?, ?)').join(', ');
-    const values = contents.flatMap((c) => [productId, c]);
+    const placeholders = contents.map(() => '(?, ?, ?, ?)').join(', ');
+    const imagesJson = images && images.length > 0 ? JSON.stringify(images) : null;
+    const values = contents.flatMap((c) => [productId, c, region, imagesJson]);
     await pool.execute(
-      `INSERT INTO stock_items (product_id, content) VALUES ${placeholders}`,
+      `INSERT INTO stock_items (product_id, content, region, images) VALUES ${placeholders}`,
       values
     );
-    logger.info('Stock items added', { productId, count: contents.length });
+    logger.info('Stock items added', { productId, region, count: contents.length });
     return contents.length;
   }
 

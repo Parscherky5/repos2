@@ -1,7 +1,8 @@
 import { Context, MiddlewareFn } from 'telegraf';
 import { userService } from '../services/UserService';
-import { rateLimitCheck } from '../redis';
+import { rateLimitCheck, isEmergencyStopActive } from '../redis';
 import { logger } from '../utils/logger';
+import { config } from '../config';
 
 /**
  * Automatically registers (or updates) a Telegram user in the database
@@ -71,3 +72,27 @@ export function rateLimitMiddleware(): MiddlewareFn<Context> {
     return next();
   };
 }
+
+/**
+ * Global emergency stop middleware.
+ * Admins always pass through; non-admins are blocked when emergency stop is active.
+ */
+export function emergencyStopMiddleware(): MiddlewareFn<Context> {
+  return async (ctx, next) => {
+    const userId = String(ctx.from?.id);
+    const adminIds = config.bot.adminIds as string[];
+    if (adminIds.includes(userId)) return next();
+
+    const active = await isEmergencyStopActive();
+    if (active) {
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery('⛔ Sistem şu an bakımda.').catch(() => {});
+        return;
+      }
+      await ctx.reply('🔧 Sistem şu an bakımda. Lütfen daha sonra tekrar deneyin.').catch(() => {});
+      return;
+    }
+    return next();
+  };
+}
+
