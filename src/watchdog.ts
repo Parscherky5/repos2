@@ -8,12 +8,16 @@ let consecutiveFailures = 0;
 const MAX_FAILURES = 3;
 
 mkdirSync('logs', { recursive: true });
-const logStream = createWriteStream('logs/watchdog.log', { flags: 'a' });
+let logStream = createWriteStream('logs/watchdog.log', { flags: 'a' });
 
 function log(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
-  logStream.write(line + '\n');
+  try {
+    logStream.write(line + '\n');
+  } catch {
+    // ignore write errors
+  }
 }
 
 async function checkHealth(): Promise<void> {

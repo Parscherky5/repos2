@@ -403,8 +403,8 @@ export async function handleWizardText(ctx: Context): Promise<void> {
 
     case 'ADD_PRODUCT_PRICE': {
       const price = parseFloat(text);
-      if (isNaN(price) || price <= 0) {
-        await ctx.reply('❌ Geçersiz fiyat. Lütfen sayısal bir değer girin (örnek: 29.99):');
+      if (isNaN(price) || price < 0.01 || price > 999999.99) {
+        await ctx.reply('❌ Geçersiz fiyat. Lütfen 0.01 ile 999999.99 arasında bir değer girin (örnek: 29.99):');
         return;
       }
       setSession(userId, { step: 'ADD_PRODUCT_DESC', data: { ...session.data, price } });
