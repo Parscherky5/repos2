@@ -13,6 +13,10 @@ export class SettingsService {
     );
   }
 
+  async getMenuBannerFileId(): Promise<string | null> {
+    return this.get('menu_image_file_id');
+  }
+
   async getRegionLabel(region: 'TR' | 'EU'): Promise<string> {
     const label = await this.get(`region_label_${region}`);
     return label ?? (region === 'TR' ? '🇹🇷 Türkiye' : '🇪🇺 Avrupa');
