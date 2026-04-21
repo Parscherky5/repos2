@@ -174,7 +174,7 @@ export class OrderService {
 
   async getUserActiveOrder(userId: string): Promise<Order | null> {
     const [rows] = await pool.execute(
-      `SELECT * FROM orders WHERE user_id = ? AND status IN ('RESERVED','PENDING_REVIEW','PENDING_VERIFICATION','PAYMENT_FAILED') LIMIT 1`,
+      `SELECT * FROM orders WHERE user_id = ? AND status IN ('INITIATED','RESERVED','PENDING_VERIFICATION','PENDING_REVIEW','PAYMENT_FAILED') LIMIT 1`,
       [userId]
     );
     const row = (rows as any[])[0];

@@ -365,6 +365,38 @@ export async function handleWizardCallback(ctx: Context): Promise<void> {
     return;
   }
 
+  // ── skip_desc ──
+  if (data === 'skip_desc') {
+    setSession(userId, { step: 'ADD_PRODUCT_PHOTO', data: { ...session.data, description: null } });
+    const buttons = [[Markup.button.callback('⏭️ Atla', 'skip_photo')]];
+    await ctx.editMessageText('🖼️ Kapak fotoğrafını gönderin (veya "Atla"):', { ...Markup.inlineKeyboard(buttons) }).catch(async () => {
+      await ctx.reply('🖼️ Kapak fotoğrafını gönderin (veya "Atla"):', Markup.inlineKeyboard(buttons));
+    });
+    await ctx.answerCbQuery();
+    return;
+  }
+
+  // ── skip_photo ──
+  if (data === 'skip_photo') {
+    const { name, price, description } = session.data;
+    const priceUsdCents = Math.round(price * 100);
+    try {
+      await pool.execute(
+        'INSERT INTO products (name, description, price_usd_cents, is_active) VALUES (?, ?, ?, 1)',
+        [name, description ?? null, priceUsdCents]
+      );
+      clearSession(userId);
+      await ctx.editMessageText(`✅ Ürün eklendi!\n\n📦 *${name}*\n💵 $${price.toFixed(2)}`, { parse_mode: 'Markdown' }).catch(async () => {
+        await ctx.reply(`✅ Ürün eklendi!\n\n📦 *${name}*\n💵 $${price.toFixed(2)}`, { parse_mode: 'Markdown' });
+      });
+    } catch (err) {
+      logger.error('Wizard skip_photo product insert failed', { err });
+      await ctx.reply('❌ Ürün eklenirken bir hata oluştu. Lütfen tekrar deneyin.');
+    }
+    await ctx.answerCbQuery();
+    return;
+  }
+
   await ctx.answerCbQuery();
 }
 
